@@ -12,6 +12,7 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
 # ---------------- MongoDB Config ----------------
 MONGO_DB_URI = os.getenv("MONGO_DB_URI")
 MONGO_DB = os.getenv("MONGO_DB")
@@ -53,64 +54,68 @@ def get_session():
         "User-Agent": "Mozilla/5.0",
         "Accept-Language": "en-US,en;q=0.9",
         "Referer": URL,
-        "Connection": "close",
     })
     return session
 
-# ---------------- Scraper ----------------
+# ---------------- Scraper with Pagination ----------------
 def BDA():
     session = get_session()
     all_tenders = []
-    page = 0
-    last_first_srno = None
+    visited_urls = set()
 
-    while True:
-        # paginated_url = f"{URL}?page={page}"
-        # print(f"Fetching page {page}: {paginated_url}")
+    next_url = URL 
 
-        # try:
-        #     res = session.get(paginated_url, timeout=(10, 30))
-        #     res.raise_for_status()
-        # except Exception as e:
-        #     print(f"Request failed: {e}")
-        #     break
+    while next_url:
+        print(f"Fetching: {next_url}")
 
-        soup = BeautifulSoup(URL.text, "html.parser")
+        try:
+            res = session.get(next_url, timeout=(10, 30))
+            res.raise_for_status()
+        except Exception as e:
+            print(f"Request failed: {e}")
+            break
+
+        soup = BeautifulSoup(res.text, "html.parser")
         table = soup.select_one("table.views-table")
 
         if not table:
-            print("No table found. Stopping pagination.")
+            print("No table found. Stopping.")
             break
 
-        rows = table.find_all("tbody tr")
-        if not rows:
-            print("No rows found. Stopping pagination.")
-            break
-
-        # first_srno = rows[0].find_all("td")[0].get_text(strip=True)
-        # if first_srno == last_first_srno:
-        #     print("Pagination loop detected (same data again). Stopping.")
-        #     break
-
-        # last_first_srno = first_srno
+        rows = table.select("tbody tr")
+        print("Rows found on this page:", len(rows))
 
         for row in rows:
             cols = row.find_all("td")
             if len(cols) < 4:
                 continue
 
-            all_tenders.append({
-                "Sr_No": cols[0].get_text(strip=True),
+            tender = {
+                "sr_no": cols[0].get_text(strip=True),
                 "description": cols[1].get_text(" ", strip=True),
-                "documents":cols[2].get(""),
-                "last_date_of_submission": cols[4].get_text(strip=True),
+                "documents": urljoin(URL, cols[2].find("a")["href"]) if cols[2].find("a") else None,
+                "last_date_of_submission": cols[3].get_text(strip=True),
                 "scraped_at": datetime.utcnow()
-            })
+            }
 
-        page += 1
+            all_tenders.append(tender)
 
+        # Find Next page
+        next_link = soup.select_one("li.pager__item--next a")
+        if not next_link:
+            print("No next page. Pagination finished.")
+            break
+
+        next_url = urljoin(URL, next_link["href"])
+
+        if next_url in visited_urls:
+            print("Pagination loop detected. Stopping.")
+            break
+
+        visited_urls.add(next_url)
+
+    print(f"Total tenders scraped: {len(all_tenders)}")
     return all_tenders
-
 # ---------------- MongoDB Store ----------------
 def store_in_mongo(data):
     if not data:
@@ -128,7 +133,7 @@ def store_in_mongo(data):
 
 # ---------------- MAIN ----------------
 def main():
-    print("Scraping hafed tenders...")
+    print("Scraping Bathinda Development Authority tenders with pagination...")
     tenders = BDA()
     print(f"Fetched {len(tenders)} tenders")
     store_in_mongo(tenders)
